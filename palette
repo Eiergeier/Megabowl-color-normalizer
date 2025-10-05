@@ -1,0 +1,227 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Megabowl – Logo-Paletten-Extractor</title>
+<style>
+  body{font:16px/1.4 system-ui,Segoe UI,Roboto,sans-serif;background:#111;color:#eee;margin:20px}
+  .row{display:flex;gap:16px;flex-wrap:wrap;margin:0 0 16px}
+  .card{border:1px solid #333;border-radius:12px;padding:12px;background:#1a1a1a;flex:1 1 360px;min-width:320px}
+  h1{font-size:20px;margin:0 0 12px}
+  label{display:block;margin:.3rem 0 .2rem;color:#bbb}
+  input[type="file"],input[type="text"]{width:100%;padding:.5rem;border-radius:8px;border:1px solid #333;background:#0f0f0f;color:#eee}
+  .sw{display:flex;gap:8px;margin-top:8px}
+  .chip{flex:1 1 0;padding:.6rem;border-radius:8px;border:1px solid #333;text-align:center;font-weight:700}
+  .small{font-size:12px;color:#aaa}
+  pre{white-space:pre-wrap;background:#0f0f0f;border:1px solid #333;border-radius:12px;padding:12px;min-height:120px}
+  canvas{display:none}
+  button{padding:.55rem .8rem;border-radius:10px;border:1px solid #444;background:#232323;color:#eee;cursor:pointer}
+  .drop{border:2px dashed #444;border-radius:12px;padding:10px;text-align:center;color:#bbb;margin:10px 0}
+  .drop.drag{border-color:#69f; background:#182030}
+  .grid{display:grid;grid-template-columns:repeat(2,minmax(240px,1fr));gap:12px}
+  @media (max-width:700px){ .grid{grid-template-columns:1fr} }
+</style>
+
+<div class="row">
+  <div class="card">
+    <h1>Logos laden</h1>
+    <p class="small">Zieh die Logos in die Box (oder klick bei jedem Player). Du kannst Bilder auch <b>einfügen</b> (Strg/Cmd+V).</p>
+    <div id="dz" class="drop" tabindex="0" role="button" aria-label="Logos hierher ziehen oder anklicken">Bilder hier ablegen / anklicken</div>
+
+    <div class="grid" id="inputs"></div>
+
+    <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+      <button id="btnExport">JSON kopieren</button>
+      <button id="btnClear">Zurücksetzen</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h1>Ergebnis: <code>PLAYER_COLORS</code></h1>
+    <pre id="out">{}</pre>
+  </div>
+</div>
+
+<script>
+(function(){
+  var PLAYERS=["w horsti","royal fumble","schellinho","schillsen","wiemagic","ycg"];
+  var state={}; // { player: {hex:["#..","#..","#.."]} }
+  var outEl=document.getElementById("out");
+  var inputs=document.getElementById("inputs");
+
+  // ---- UI für jeden Player
+  function makeCard(name){
+    var id=css(name);
+    var wrap=document.createElement("div");
+    wrap.className="card-like";
+    wrap.innerHTML =
+      '<label><b>'+name+'</b></label>'+
+      '<input id="file-'+id+'" type="file" accept="image/*">'+
+      '<div class="sw">'+
+        '<div class="chip" id="c1-'+id+'">—</div>'+
+        '<div class="chip" id="c2-'+id+'">—</div>'+
+        '<div class="chip" id="c3-'+id+'">—</div>'+
+      '</div>';
+    var inp=wrap.querySelector('input');
+    inp.onchange=function(e){ handleFiles(e.target.files, name); };
+    inputs.appendChild(wrap);
+  }
+
+  // ---- Drag & Drop / Click auf Dropzone
+  var dz=document.getElementById("dz");
+  dz.addEventListener("click", function(){
+    // Öffnet alle Inputs in Folge (optional kannst du das entfernen)
+    var first=inputs.querySelector('input[type=file]');
+    if(first) first.click();
+  });
+  dz.addEventListener("dragover", function(e){ e.preventDefault(); dz.classList.add("drag"); });
+  dz.addEventListener("dragleave", function(){ dz.classList.remove("drag"); });
+  dz.addEventListener("drop", function(e){
+    e.preventDefault(); dz.classList.remove("drag");
+    if(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length){
+      handleFiles(e.dataTransfer.files, null);
+    }
+  });
+  // Paste (Strg/Cmd+V)
+  document.addEventListener("paste", function(e){
+    if(!(e.clipboardData && e.clipboardData.items)) return;
+    var files=[];
+    for(var i=0;i<e.clipboardData.items.length;i++){
+      var it=e.clipboardData.items[i];
+      if(it.kind==="file"){ files.push(it.getAsFile()); }
+    }
+    if(files.length){ handleFiles(files, null); }
+  });
+
+  function handleFiles(fileList, forcedPlayer){
+    var arr = fileList instanceof FileList ? Array.prototype.slice.call(fileList) : fileList;
+    for(var i=0;i<arr.length;i++){
+      (function(file){
+        if(!file || !/^image\//i.test(file.type)) return;
+        var reader=new FileReader();
+        reader.onload=function(){
+          var img=new Image();
+          img.onload=function(){
+            extractTop3(img, function(hex){
+              var p = forcedPlayer || inferPlayerFromFilename(file.name) || askPlayerChoice();
+              if(!p) return;
+              setColors(p, hex);
+            });
+          };
+          img.src=reader.result;
+        };
+        reader.readAsDataURL(file);
+      })(arr[i]);
+    }
+  }
+
+  function inferPlayerFromFilename(name){
+    var s=name.toLowerCase();
+    if(/horsti|w.?horsti/.test(s)) return "w horsti";
+    if(/royal|fumble|rf/.test(s)) return "royal fumble";
+    if(/schell/i.test(s)) return "schellinho";
+    if(/schill/i.test(s)) return "schillsen";
+    if(/magic/i.test(s)) return "wiemagic";
+    if(/ycg/.test(s)) return "ycg";
+    return null;
+  }
+  function askPlayerChoice(){
+    var msg="Für welchen Player ist dieses Logo?\n"+
+            "Optionen: "+PLAYERS.join(", ")+"\n"+
+            "(Tipp: benenne Dateien z.B. 'royal.png' oder 'w-horsti.jpg', dann wird es automatisch erkannt)";
+    var inp=prompt(msg,"");
+    if(!inp) return null;
+    inp = inp.toLowerCase().replace(/[’']/g,"").replace(/[^a-z0-9]+/g," ").trim();
+    // einfache Normalisierung
+    if(inp==="royal") inp="royal fumble";
+    if(inp==="whorsti") inp="w horsti";
+    for(var i=0;i<PLAYERS.length;i++){
+      if(inp===PLAYERS[i]) return PLAYERS[i];
+    }
+    return null;
+  }
+
+  // ---- Farben berechnen
+  function extractTop3(img, cb){
+    try{
+      var W=48,H=48, cnv=document.createElement("canvas"), ctx=cnv.getContext("2d");
+      cnv.width=W; cnv.height=H; ctx.drawImage(img,0,0,W,H);
+      var data=ctx.getImageData(0,0,W,H).data, buckets={}, i,r,g,b,a,key;
+      for(i=0;i<data.length;i+=4){
+        r=data[i]; g=data[i+1]; b=data[i+2]; a=data[i+3];
+        if(a<16) continue;
+        var rq=r>>3, gq=g>>3, bq=b>>3;
+        key=(rq<<10)|(gq<<5)|bq;
+        if(!buckets[key]) buckets[key]={cnt:0,sum:[0,0,0]};
+        var bk=buckets[key]; bk.cnt++; bk.sum[0]+=r; bk.sum[1]+=g; bk.sum[2]+=b;
+      }
+      var arr=[], k;
+      for(k in buckets){ if(!buckets.hasOwnProperty(k)) continue;
+        var o=buckets[k]; arr.push({cnt:o.cnt, rgb:[(o.sum[0]/o.cnt)|0,(o.sum[1]/o.cnt)|0,(o.sum[2]/o.cnt)|0]});
+      }
+      if(!arr.length){ cb(["#6f8c69","#4d5c4a","#ffd166"]); return; }
+      // ähnliche Farben zusammenführen
+      var merged=[];
+      while(arr.length){
+        var x=arr.pop(), done=false, j;
+        for(j=0;j<merged.length;j++){
+          if(dist2(x.rgb, merged[j].rgb) < 30*30){
+            var m=merged[j], tot=m.cnt+x.cnt;
+            m.rgb[0]=((m.rgb[0]*m.cnt + x.rgb[0]*x.cnt)/tot)|0;
+            m.rgb[1]=((m.rgb[1]*m.cnt + x.rgb[1]*x.cnt)/tot)|0;
+            m.rgb[2]=((m.rgb[2]*m.cnt + x.rgb[2]*x.cnt)/tot)|0;
+            m.cnt=tot; done=true; break;
+          }
+        }
+        if(!done) merged.push(x);
+      }
+      merged.sort(function(a,b){return b.cnt-a.cnt;});
+      var top=merged.slice(0,3).map(function(e){return hex(e.rgb[0],e.rgb[1],e.rgb[2]);});
+      while(top.length<3) top.push(top[top.length-1]);
+      cb(top);
+    }catch(e){
+      console.error(e); cb(["#6f8c69","#4d5c4a","#ffd166"]);
+    }
+  }
+
+  // ---- Helpers
+  function css(s){return s.toLowerCase().replace(/[’']/g,"").replace(/[^a-z0-9]+/g,"-");}
+  function hex(r,g,b){function h(n){var s=n.toString(16);return s.length===1?"0"+s:s;} return "#"+h(r)+h(g)+h(b);}
+  function dist2(a,b){var dr=a[0]-b[0],dg=a[1]-b[1],db=a[2]-b[2];return dr*dr+dg*dg+db*db;}
+  function getTextColor(hx){
+    var c=parseInt(hx.slice(1),16), r=(c>>16)&255,g=(c>>8)&255,b=c&255;
+    var yiq=((r*299)+(g*587)+(b*114))/1000; return yiq>=160?"#111":"#fff";
+  }
+
+  function setColors(player, hex){
+    state[player]={hex:hex};
+    var id=css(player);
+    for(var i=0;i<3;i++){
+      var el=document.getElementById('c'+(i+1)+'-'+id);
+      if(!el) continue;
+      el.textContent=hex[i]; el.style.background=hex[i];
+      el.style.color = getTextColor(hex[i]);
+    }
+    renderJSON();
+  }
+
+  function renderJSON(){
+    var obj={}, p;
+    for(p in state){
+      if(!state.hasOwnProperty(p)) continue;
+      var k=p.toLowerCase().replace(/[’']/g,"").replace(/[^a-z0-9]+/g," ");
+      obj[k]={ primary: state[p].hex[0], secondary: state[p].hex[1], tertiary: state[p].hex[2] };
+    }
+    outEl.textContent = "var PLAYER_COLORS = " + JSON.stringify(obj, null, 2) + ";";
+  }
+
+  document.getElementById("btnExport").onclick=function(){
+    if(navigator.clipboard){ navigator.clipboard.writeText(outEl.textContent); }
+    alert("JSON in die Zwischenablage kopiert (falls erlaubt).");
+  };
+  document.getElementById("btnClear").onclick=function(){
+    state={}; outEl.textContent="{}"; inputs.innerHTML=""; PLAYERS.forEach(makeCard);
+  };
+
+  // Start UI
+  PLAYERS.forEach(makeCard);
+})();
+</script>
